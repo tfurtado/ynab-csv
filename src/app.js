@@ -10,8 +10,27 @@ var encodings = [
   "gb18030", "Big5", "EUC-JP", "ISO-2022-JP", "Shift_JIS", "EUC-KR",
   "replacement", "UTF-16BE", "UTF-16LE", "x-user-defined"
 ]
+var delimiters = [
+  "auto",
+  ",",
+  ";",
+  "|"
+]
 var old_ynab_cols = ["Date", "Payee", "Memo", "Outflow", "Inflow"];
 var new_ynab_cols = ["Date", "Payee", "Memo", "Amount"];
+var defaultProfile = {
+  columnFormat: old_ynab_cols,
+  chosenColumns: old_ynab_cols.reduce(function (acc, val) {
+    acc[val] = val;
+    return acc;
+  }, {}),
+  chosenEncoding: "UTF-8",
+  chosenDelimiter: "auto",
+  startAtRow: 1
+};
+var defaultProfiles = {
+  "default profile": defaultProfile
+};
 
 Date.prototype.yyyymmdd = function () {
   var mm = this.getMonth() + 1; // getMonth() is zero-based
@@ -64,8 +83,11 @@ angular.element(document).ready(function () {
             var efct;
             element.addClass("dragging");
             event.preventDefault();
-            efct = event.dataTransfer.effectAllowed;
-            event.dataTransfer.dropEffect =
+            event.stopPropagation();
+            var dataTransfer;
+            dataTransfer = (event.dataTransfer || event.originalEvent.dataTransfer)
+            efct = dataTransfer.effectAllowed;
+            dataTransfer.dropEffect =
               "move" === efct || "linkMove" === efct ? "move" : "copy";
           });
           element.bind("dragleave", function (event) {
@@ -83,34 +105,83 @@ angular.element(document).ready(function () {
                 scope.dropzone = loadEvent.target.result;
               });
             };
-            reader.readAsText(event.dataTransfer.files[0], attributes.encoding);
+            file = (event.dataTransfer || event.originalEvent.dataTransfer).files[0];
+            reader.readAsText(file, attributes.encoding);
+          });
+          element.bind("paste", function (event) {
+            var items = (event.clipboardData || event.originalEvent.clipboardData).items;
+            for (var i = 0; i < items.length; i++) {
+              if (items[i].type == 'text/plain') {
+                data = items[i];
+                break;
+              }
+            }
+            if (!data) return;
+
+            data.getAsString(function(text) {
+              scope.$apply(function () {
+                scope.dropzone = text;
+              });
+            });
           });
         }
       };
     }
   ]);
   // Application code
-  angular.module("app").controller("ParseController", function ($scope) {
+  angular.module("app")
+  .config(function($locationProvider) {
+    $locationProvider.html5Mode({
+      enabled: true,
+      requireBase: false,
+    }).hashPrefix('!');
+  })
+  .controller("ParseController", function ($scope, $location) {
     $scope.angular_loaded = true;
 
     $scope.setInitialScopeState = function () {
-      $scope.ynab_cols = JSON.parse(localStorage.getItem('columnFormat')) || old_ynab_cols;
+      $scope.profileName = ($location.search().profile || localStorage.getItem('profileName') || 'default profile').toLowerCase();
+      $scope.profiles = JSON.parse(localStorage.getItem('profiles')) || defaultProfiles;
+      if(!$scope.profiles[$scope.profileName]) {
+        $scope.profiles[$scope.profileName] = defaultProfile;
+      }
+      $scope.profile = $scope.profiles[$scope.profileName];
+      $scope.ynab_cols = $scope.profile.columnFormat;
       $scope.data = {};
-      $scope.ynab_map = JSON.parse(localStorage.getItem('chosenColumns')) || $scope.ynab_cols.reduce(function (acc, val) {
-        acc[val] = val;
-        return acc;
-      }, {});
+      $scope.ynab_map = $scope.profile.chosenColumns
       $scope.inverted_outflow = false;
       $scope.file = {
         encodings: encodings,
-        chosenEncoding: localStorage.getItem('chosenEncoding') || "UTF-8"
+        delimiters: delimiters,
+        chosenEncoding: $scope.profile.chosenEncoding || "UTF-8",
+        chosenDelimiter: $scope.profile.chosenDelimiter || "auto",
+        startAtRow: $scope.profile.startAtRow
       };
       $scope.data_object = new DataObject();
     }
 
     $scope.setInitialScopeState();
+    $scope.profileChosen = function (profileName) {
+      $location.search('profile', profileName);
+      $scope.profile = $scope.profiles[$scope.profileName];
+      $scope.ynab_cols = $scope.profile.columnFormat;
+      $scope.ynab_map = $scope.profile.chosenColumns;
+      localStorage.setItem('profileName', profileName);
+    };
     $scope.encodingChosen = function (encoding) {
-      localStorage.setItem('chosenEncoding', encoding);
+      $scope.profile.chosenEncoding = encoding;
+      localStorage.setItem('profiles', JSON.stringify($scope.profiles));
+    };
+    $scope.delimiterChosen = function (delimiter) {
+      $scope.profile.chosenDelimiter = delimiter;
+      localStorage.setItem('profiles', JSON.stringify($scope.profiles));
+    };
+    $scope.startRowSet = function (startAtRow) {
+      $scope.profile.startAtRow = startAtRow;
+      localStorage.setItem('profiles', JSON.stringify($scope.profiles));
+    };
+    $scope.nonDefaultProfilesExist = function() {
+      return Object.keys($scope.profiles).length > 1;
     };
     $scope.toggleColumnFormat = function () {
       if ($scope.ynab_cols == new_ynab_cols) {
@@ -118,12 +189,16 @@ angular.element(document).ready(function () {
       } else {
         $scope.ynab_cols = new_ynab_cols;
       }
-      localStorage.setItem('columnFormat', JSON.stringify($scope.ynab_cols));
-    }
-
+      $scope.profile.columnFormat = $scope.ynab_cols
+      localStorage.setItem('profiles', JSON.stringify($scope.profiles));
+    };
     $scope.$watch("data.source", function (newValue, oldValue) {
       if (newValue && newValue.length > 0) {
-        $scope.data_object.parse_csv(newValue, $scope.file.chosenEncoding);
+        if ($scope.file.chosenDelimiter == "auto") {
+          $scope.data_object.parseCsv(newValue, $scope.file.chosenEncoding, $scope.file.startAtRow);
+        } else {
+          $scope.data_object.parseCsv(newValue, $scope.file.chosenEncoding, $scope.file.startAtRow, $scope.file.chosenDelimiter);
+        }
         $scope.preview = $scope.data_object.converted_json(10, $scope.ynab_cols, $scope.ynab_map, $scope.inverted_outflow);
       }
     });
@@ -135,7 +210,8 @@ angular.element(document).ready(function () {
     $scope.$watch(
       "ynab_map",
       function (newValue, oldValue) {
-        localStorage.setItem('chosenColumns', JSON.stringify(newValue));
+        $scope.profile.chosenColumns = newValue;
+        localStorage.setItem('profiles', JSON.stringify($scope.profiles));
         $scope.preview = $scope.data_object.converted_json(10, $scope.ynab_cols, newValue, $scope.inverted_outflow);
       },
       true
