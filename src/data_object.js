@@ -4,13 +4,20 @@ window.DataObject = class DataObject {
   constructor() {
     this.base_json = null;
   }
+
   // Parse base csv file as JSON. This will be easier to work with.
   // It uses http://papaparse.com/ for handling parsing
-  parse_csv(csv, encoding) {
+  parseCsv(csv, encoding, startAtRow=1, delimiter=null) {
     let existingHeaders = [];
-    return (this.base_json = Papa.parse(csv, {
-      skipEmptyLines: true,
+    let config = {
       header: true,
+      skipEmptyLines: true,
+      beforeFirstChunk: function(chunk) {
+        var rows = chunk.split("\n");
+        var startIndex = startAtRow - 1;
+        rows = rows.slice(startIndex);
+        return rows.join("\n");
+      },
       transformHeader: function(header) {
         if (header.trim().length == 0) {
           header = "Unnamed column";
@@ -27,7 +34,12 @@ window.DataObject = class DataObject {
         existingHeaders.push(header);
         return header;
       }
-    }));
+    }
+    if (delimiter !== null) {
+      config.delimiter = delimiter
+    }
+    var result = Papa.parse(csv, config);
+    return (this.base_json = result);
   }
 
   fields() {
@@ -67,6 +79,7 @@ window.DataObject = class DataObject {
             if (cell) {
               switch (col) {
                 case "Outflow":
+
                   if (lookup['Outflow'] == lookup['Inflow']) {
                     if (!inverted_outflow) {
                       tmp_row[col] = cell.startsWith('-') ? cell.slice(1) : "";
@@ -74,7 +87,7 @@ window.DataObject = class DataObject {
                       tmp_row[col] = cell.startsWith('-') ? "" : cell;
                     }
                   } else {
-                    tmp_row[col] = cell;
+                    tmp_row[col] = cell.startsWith('-') ? cell.slice(1) : cell;
                   }
                   break;
                 case "Inflow":
@@ -111,7 +124,11 @@ window.DataObject = class DataObject {
       var row_values;
       row_values = [];
       ynab_cols.forEach(function (col) {
-        return row_values.push(row[col]);
+        var row_value;
+        row_value = row[col] || "";
+        // escape text which might already have a quote in it
+        row_value = row_value.replace(/"/g, '""').trim();
+        return row_values.push(row_value);
       });
       return (string += '"' + row_values.join('","') + '"\n');
     });
