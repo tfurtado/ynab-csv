@@ -1,5 +1,3 @@
-version: '3'
-
 services:
   ynab-csv-app:
     build: .
